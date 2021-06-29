@@ -1,0 +1,127 @@
+from tweepy import OAuthHandler, Cursor, API
+import gpt_2_simple as gpt2
+import twitter_credentials as tc
+import os
+from random import choice
+
+auth = OAuthHandler(tc.CONSUMER_KEY, tc.CONSUMER_SECRET)
+auth.set_access_token(tc.ACCESS_TOKEN, tc.ACCESS_TOKEN_SECRET)
+api = API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
+
+model_name = "355M"
+if not os.path.isdir(os.path.join("models", model_name)):
+    print(f"Downloading {model_name} model...")
+    gpt2.download_gpt2(model_name=model_name)
+
+
+#def get_trending():
+ #   trends = api.trends_place(id=23424977)
+  #  trending = []
+   # for trend in trends[0]["trends"]:
+    #    trending.append(trend["name"])
+    #return trending
+
+
+#def get_topic_tweet(topic, max_tweets=1000):
+ #   searched_tweets = [status for status in Cursor(api.search, q=topic+" -filter:retweets",
+  #                                                 lang='en', tweet_mode='extended').items(max_tweets)]
+  #  found_tweets = []
+   # for tweet in searched_tweets:
+    #    try:
+     #       found_tweets.append(tweet.full_text)
+      #  except:
+       #     pass
+    #return found_tweets
+
+def get_tweets():
+    tweets_list = []
+    photo_list = []
+    text_query = 'coronavirus'
+    count = 1000
+    try:
+        for tweet in api.search(q=text_query, count=count):
+            tweets_list.append((tweet.text))
+           # photo_list.append((tweet.media))
+    except BaseException as e:
+        print('failed on_status, ', str(e))
+    return tweets_list
+
+def generate_tweet():
+    # pick a topic
+    #trending = get_trending()
+    topic = 'coronavirus'
+    #print("generating tweets on topic"+topic)
+    # fetch tweets on topic
+    file_name = '../data/coronavirus.txt'
+    prev_tweets = get_tweets()
+    tweet_string = " || ".join(prev_tweets)
+    with open(file_name, 'w') as f:
+        f.write(tweet_string)
+    # train a model on new tweets
+    sess = gpt2.start_tf_sess()
+    if not os.path.exists('checkpoint/coronavirus'):
+        gpt2.finetune(
+            sess,
+            dataset=file_name,
+            model_name=model_name,
+            steps=2,
+            restore_from='fresh',
+            run_name=topic,
+            print_every=1
+        )
+    else:
+        gpt2.finetune(
+            sess,
+            dataset=file_name,
+            model_name=model_name,
+            steps=1,
+            restore_from='latest',
+            run_name=topic,
+            print_every=1
+        )
+    # generate text with the new model
+    gpt2.generate_to_file(
+        sess,
+        length=400,
+        destination_path='../data/generated_tweets.txt',
+        nsamples=5,
+        run_name=topic,
+        prefix=topic,
+    )
+    gpt2.reset_session(sess)
+    # filter and return 1 vallid tweet from generated text
+    with open('../data/generated_tweets.txt', 'r') as f:
+        texts = f.read().split('====================')
+    tweets = []
+    for text in texts:
+        tweeters = text.split(" || ")
+        for tweet in tweeters:
+            if topic in tweet:
+                tweet = tweet.split(" ")
+                tweet = " ".join(
+                    word for word in tweet if not filter_links(word))
+                if len(tweet) > len(topic) + 4:
+                    tweets.append(tweet)
+            else:
+                continue
+    tweet = choice(tweets)
+    if len(tweet) > 280:
+        tweet = tweet[:280]
+    return tweet
+
+
+def filter_links(word):
+    if word.find('http') != -1:
+        return True
+    return False
+
+
+def run_bot():
+    while True:
+        tweet = generate_tweet()
+        print("I am tweeting: " + tweet)
+        api.update_status(tweet)
+
+
+if __name__ == "__main__":
+    run_bot()
